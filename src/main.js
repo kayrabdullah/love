@@ -221,13 +221,14 @@ class Particle {
       endY = this.scatterY;
     }
 
-    const shimmer = Math.sin(elapsed * 0.0024 + this.drift) * (1 - raw) * 18;
+    const shimmerStrength = lowPowerMode ? 2.8 : 6.2;
+    const shimmer = Math.sin(elapsed * 0.0015 + this.drift) * (1 - raw) * shimmerStrength;
     this.x = lerp(startX, endX, eased) + Math.cos(this.drift) * shimmer;
     this.y = lerp(startY, endY, eased) + Math.sin(this.drift) * shimmer;
 
     if (currentMode === "assemble") {
-      const spring = prefersReducedMotion ? 0.36 : 0.055;
-      const damping = prefersReducedMotion ? 0.52 : 0.89;
+      const spring = prefersReducedMotion ? 0.36 : 0.045;
+      const damping = prefersReducedMotion ? 0.52 : 0.78;
       this.velocityX += -this.offsetX * spring;
       this.velocityY += -this.offsetY * spring;
       this.velocityX *= damping;
@@ -431,7 +432,7 @@ function applyQualityTier() {
 
 function getInteractionRadius() {
   if (lowPowerMode) {
-    return width < 420 ? 42 : 50;
+    return width < 420 ? 32 : 40;
   }
 
   return width < 640 ? 58 : 74;
@@ -457,14 +458,16 @@ function drawBackgroundParticles(delta) {
 }
 
 function calculateImageRect() {
-  const safeTop = width < 640 ? 86 : 84;
-  const safeBottom = width < 640 ? 118 : 92;
-  const sidePadding = clamp(width * 0.08, 22, 86);
+  const safeTop = width < 640 ? 56 : 42;
+  const safeBottom = width < 640 ? 86 : 54;
+  const sidePadding = width < 640
+    ? clamp(width * 0.035, 10, 18)
+    : clamp(width * 0.045, 18, 58);
   const maxWidth = width - sidePadding * 2;
   const maxHeight = height - safeTop - safeBottom;
   const imageRatio = image.naturalWidth / image.naturalHeight;
 
-  let rectWidth = Math.min(maxWidth, 720);
+  let rectWidth = Math.min(maxWidth, width < 640 ? maxWidth : 840);
   let rectHeight = rectWidth / imageRatio;
 
   if (rectHeight > maxHeight) {
@@ -529,11 +532,13 @@ function eraseStaticParticleHoles(particleList) {
 
     const tileWidth = particle.tile?.width ?? particle.size;
     const tileHeight = particle.tile?.height ?? particle.size;
-    const scale = lowPowerMode ? 2.1 : 1.55;
-    const holeWidth = Math.max(tileWidth * scale, particle.size * 1.8);
-    const holeHeight = Math.max(tileHeight * scale, particle.size * 1.8);
+    const scale = lowPowerMode ? 0.92 : 1.2;
+    const holeWidth = Math.max(tileWidth * scale, particle.size * 1.12);
+    const holeHeight = Math.max(tileHeight * scale, particle.size * 1.12);
 
-    ctx.globalAlpha = 0.2 + strength * 0.8;
+    ctx.globalAlpha = lowPowerMode
+      ? 0.04 + strength * 0.24
+      : 0.1 + strength * 0.58;
     ctx.fillRect(
       particle.targetX - holeWidth / 2,
       particle.targetY - holeHeight / 2,
