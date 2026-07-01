@@ -1,9 +1,14 @@
 import "./styles.css";
 
-const PARTICLE_COUNT = 10000;
-const GRID_COLUMNS = 80;
-const GRID_ROWS = PARTICLE_COUNT / GRID_COLUMNS;
-const BACKGROUND_PARTICLE_COUNT = 190;
+const QUALITY_TIERS = [
+  { maxWidth: 380, columns: 24, rows: 38, backgroundParticles: 22, frameInterval: 50, lowPower: true },
+  { maxWidth: 480, columns: 32, rows: 50, backgroundParticles: 34, frameInterval: 42, lowPower: true },
+  { maxWidth: 640, columns: 42, rows: 66, backgroundParticles: 48, frameInterval: 34, lowPower: true },
+  { maxWidth: 980, columns: 64, rows: 100, backgroundParticles: 92, frameInterval: 26, lowPower: false },
+  { maxWidth: Infinity, columns: 80, rows: 125, backgroundParticles: 160, frameInterval: 16, lowPower: false },
+];
+const DAISY_VARIANT_COUNT = 8;
+const DAISY_SPRITE_SIZE = 48;
 const PHOTO_URL = `${import.meta.env.BASE_URL}portrait.jpeg`;
 
 const canvas = document.querySelector("#particleCanvas");
@@ -29,12 +34,21 @@ const interaction = {
 let image;
 let particles = [];
 let backgroundParticles = [];
+let daisySprites = [];
+let activeParticles = new Set();
+let staticPhotoCanvas = null;
 let dpr = 1;
 let width = 0;
 let height = 0;
 let imageRect = { x: 0, y: 0, width: 0, height: 0 };
+let gridColumns = 80;
+let gridRows = 125;
+let backgroundParticleTarget = 190;
+let staticFrameInterval = 16;
+let lowPowerMode = false;
 let animationStart = 0;
 let animationFrame = 0;
+let animationTimer = 0;
 let mode = "assemble";
 let progress = 0;
 let previousFrameTime = 0;
@@ -80,6 +94,14 @@ class BackgroundParticle {
       return;
     }
 
+    if (lowPowerMode) {
+      context.fillStyle = `rgba(${Math.min(this.red + 44, 255)}, ${this.green + 8}, ${this.blue + 8}, ${this.alpha * 0.82})`;
+      context.beginPath();
+      context.arc(this.x, this.y, this.size * 1.15, 0, Math.PI * 2);
+      context.fill();
+      return;
+    }
+
     const trailGradient = context.createRadialGradient(
       this.x,
       this.y + this.trail * 0.48,
@@ -116,7 +138,7 @@ class Particle {
     this.size = size;
     this.tile = tile;
     this.index = index;
-    this.delay = Math.random() * 560 + (index % GRID_COLUMNS) * 2.2;
+    this.delay = Math.random() * 560 + (index % gridColumns) * 2.2;
     this.duration = 1500 + Math.random() * 920;
     this.drift = Math.random() * Math.PI * 2;
     this.offsetX = 0;
@@ -126,6 +148,9 @@ class Particle {
     this.drawX = targetX;
     this.drawY = targetY;
     this.isDisplaced = false;
+    this.motionRaw = 0;
+    this.spriteIndex = index % DAISY_VARIANT_COUNT;
+    this.daisyScale = 0.76 + seededFraction(index, 2) * 0.36;
     this.setScatterSource(true);
   }
 
@@ -182,6 +207,7 @@ class Particle {
     const delay = prefersReducedMotion ? 0 : this.delay;
     const raw = clamp((elapsed - delay) / duration, 0, 1);
     const eased = easeOutQuint(raw);
+    this.motionRaw = raw;
 
     let startX = this.sourceX;
     let startY = this.sourceY;
@@ -242,9 +268,34 @@ class Particle {
   }
 
   draw(context) {
-    context.globalAlpha = 1;
+    const displacement =
+      Math.hypot(this.offsetX, this.offsetY) +
+      Math.hypot(this.velocityX, this.velocityY) * 0.018;
+    const disturbed = smoothstep(4, 30, displacement);
+    let imageAlpha = 1;
+    let daisyAlpha = 0;
 
-    if (this.tile) {
+    if (mode === "scatter") {
+      imageAlpha = 1 - smoothstep(0.02, 0.24, this.motionRaw);
+      daisyAlpha = smoothstep(0.08, 0.34, this.motionRaw);
+    } else {
+      const photoReveal = smoothstep(0.62, 0.98, this.motionRaw);
+      const travelFlower = 1 - smoothstep(0.46, 0.9, this.motionRaw);
+      daisyAlpha = Math.max(travelFlower, disturbed);
+      imageAlpha = photoReveal * (1 - disturbed * 0.82);
+    }
+
+    if (lowPowerMode && mode === "assemble" && disturbed < 0.08) {
+      imageAlpha = 0;
+    }
+
+    if (prefersReducedMotion) {
+      imageAlpha = mode === "scatter" ? 0 : 1;
+      daisyAlpha = mode === "scatter" ? 1 : 0;
+    }
+
+    if (this.tile && imageAlpha > 0.02) {
+      context.globalAlpha = imageAlpha;
       context.drawImage(
         image,
         this.tile.sourceX,
@@ -256,12 +307,35 @@ class Particle {
         this.tile.width,
         this.tile.height,
       );
-      return;
     }
 
-    context.fillStyle = this.color;
-    const half = this.size / 2;
-    context.fillRect(this.drawX - half, this.drawY - half, this.size, this.size);
+    if (daisyAlpha > 0.02) {
+      const sprite = daisySprites[this.spriteIndex];
+      const daisySize = clamp(
+        this.size * (1.62 + this.daisyScale * 0.72),
+        5.4,
+        width < 640 ? 12.4 : 15.8,
+      );
+
+      context.globalAlpha = daisyAlpha * 0.94;
+
+      if (sprite) {
+        context.drawImage(
+          sprite,
+          this.drawX - daisySize / 2,
+          this.drawY - daisySize / 2,
+          daisySize,
+          daisySize,
+        );
+      } else {
+        context.fillStyle = this.color;
+        context.beginPath();
+        context.arc(this.drawX, this.drawY, daisySize * 0.32, 0, Math.PI * 2);
+        context.fill();
+      }
+    }
+
+    context.globalAlpha = 1;
   }
 }
 
@@ -282,13 +356,90 @@ function smoothstep(edge0, edge1, value) {
   return x * x * (3 - 2 * x);
 }
 
+function seededFraction(index, salt = 0) {
+  const value = Math.sin(index * 12.9898 + salt * 78.233) * 43758.5453;
+  return value - Math.floor(value);
+}
+
+function createDaisySprites() {
+  return Array.from({ length: DAISY_VARIANT_COUNT }, (_, variant) => {
+    const sprite = document.createElement("canvas");
+    const spriteCtx = sprite.getContext("2d");
+    const center = DAISY_SPRITE_SIZE / 2;
+    const petalCount = 7;
+    const turn = (Math.PI * 2) / petalCount;
+
+    sprite.width = DAISY_SPRITE_SIZE;
+    sprite.height = DAISY_SPRITE_SIZE;
+    spriteCtx.clearRect(0, 0, DAISY_SPRITE_SIZE, DAISY_SPRITE_SIZE);
+    spriteCtx.translate(center, center);
+    spriteCtx.rotate((variant / DAISY_VARIANT_COUNT) * Math.PI * 0.82);
+
+    for (let i = 0; i < petalCount; i += 1) {
+      spriteCtx.save();
+      spriteCtx.rotate(i * turn);
+      spriteCtx.fillStyle = i % 2 === 0 ? "rgba(255, 250, 235, 0.96)" : "rgba(248, 244, 232, 0.9)";
+      spriteCtx.shadowBlur = 4;
+      spriteCtx.shadowColor = "rgba(255, 239, 190, 0.42)";
+      spriteCtx.beginPath();
+      spriteCtx.ellipse(0, -11.2, 4.7, 10.5, 0, 0, Math.PI * 2);
+      spriteCtx.fill();
+      spriteCtx.restore();
+    }
+
+    spriteCtx.shadowBlur = 5;
+    spriteCtx.shadowColor = "rgba(236, 187, 73, 0.56)";
+    spriteCtx.fillStyle = "rgba(231, 176, 52, 0.98)";
+    spriteCtx.beginPath();
+    spriteCtx.arc(0, 0, 5.3, 0, Math.PI * 2);
+    spriteCtx.fill();
+
+    spriteCtx.fillStyle = "rgba(255, 226, 103, 0.92)";
+    spriteCtx.beginPath();
+    spriteCtx.arc(-1.5, -1.6, 1.7, 0, Math.PI * 2);
+    spriteCtx.fill();
+
+    return sprite;
+  });
+}
+
+function selectQualityTier() {
+  const viewportWidth = Math.min(window.innerWidth || 0, window.screen?.width || window.innerWidth || 0) || window.innerWidth;
+  const lowCpu = navigator.hardwareConcurrency ? navigator.hardwareConcurrency <= 2 : false;
+  const lowMemory = navigator.deviceMemory ? navigator.deviceMemory <= 1 : false;
+
+  if (lowCpu || lowMemory) {
+    return QUALITY_TIERS[0];
+  }
+
+  return QUALITY_TIERS.find((tier) => viewportWidth <= tier.maxWidth) ?? QUALITY_TIERS[QUALITY_TIERS.length - 1];
+}
+
+function applyQualityTier() {
+  const tier = selectQualityTier();
+  const changed = gridColumns !== tier.columns || gridRows !== tier.rows;
+  gridColumns = tier.columns;
+  gridRows = tier.rows;
+  backgroundParticleTarget = tier.backgroundParticles;
+  staticFrameInterval = tier.frameInterval;
+  lowPowerMode = tier.lowPower;
+  canvas.dataset.grid = `${gridColumns}x${gridRows}`;
+  canvas.dataset.lowPower = String(lowPowerMode);
+  canvas.dataset.backgroundParticles = String(backgroundParticleTarget);
+  return changed;
+}
+
 function getInteractionRadius() {
+  if (lowPowerMode) {
+    return width < 420 ? 42 : 50;
+  }
+
   return width < 640 ? 58 : 74;
 }
 
 function rebuildBackgroundParticles() {
   backgroundParticles = Array.from(
-    { length: BACKGROUND_PARTICLE_COUNT },
+    { length: backgroundParticleTarget },
     () => new BackgroundParticle(true),
   );
 }
@@ -329,10 +480,39 @@ function calculateImageRect() {
   };
 }
 
+function rebuildStaticPhotoCanvas() {
+  if (!image || imageRect.width <= 0 || imageRect.height <= 0) {
+    staticPhotoCanvas = null;
+    return;
+  }
+
+  staticPhotoCanvas = document.createElement("canvas");
+  staticPhotoCanvas.width = Math.max(1, Math.floor(imageRect.width * dpr));
+  staticPhotoCanvas.height = Math.max(1, Math.floor(imageRect.height * dpr));
+
+  const staticCtx = staticPhotoCanvas.getContext("2d", { alpha: true });
+  staticCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  staticCtx.imageSmoothingEnabled = true;
+  staticCtx.imageSmoothingQuality = "high";
+  staticCtx.drawImage(image, 0, 0, imageRect.width, imageRect.height);
+}
+
+function drawStaticPhoto(alpha = 1) {
+  if (!staticPhotoCanvas || alpha <= 0) {
+    return;
+  }
+
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.drawImage(staticPhotoCanvas, imageRect.x, imageRect.y, imageRect.width, imageRect.height);
+  ctx.restore();
+}
+
 function resizeCanvas() {
-  dpr = Math.min(window.devicePixelRatio || 1, 2);
   width = window.innerWidth;
   height = window.innerHeight;
+  const qualityChanged = applyQualityTier();
+  dpr = lowPowerMode ? 1 : Math.min(window.devicePixelRatio || 1, 2);
   canvas.width = Math.floor(width * dpr);
   canvas.height = Math.floor(height * dpr);
   canvas.style.width = `${width}px`;
@@ -341,32 +521,33 @@ function resizeCanvas() {
   rebuildBackgroundParticles();
 
   if (image) {
-    rebuildParticles(false);
+    rebuildParticles(qualityChanged);
   }
 }
 
 function sampleImageColors() {
   const source = document.createElement("canvas");
   const sourceCtx = source.getContext("2d", { willReadFrequently: true });
-  source.width = GRID_COLUMNS;
-  source.height = GRID_ROWS;
+  source.width = gridColumns;
+  source.height = gridRows;
   sourceCtx.drawImage(image, 0, 0, source.width, source.height);
   return sourceCtx.getImageData(0, 0, source.width, source.height).data;
 }
 
 function rebuildParticles(resetAnimation = true) {
   imageRect = calculateImageRect();
+  rebuildStaticPhotoCanvas();
   const colors = sampleImageColors();
-  const cellWidth = imageRect.width / GRID_COLUMNS;
-  const cellHeight = imageRect.height / GRID_ROWS;
-  const sourceCellWidth = image.naturalWidth / GRID_COLUMNS;
-  const sourceCellHeight = image.naturalHeight / GRID_ROWS;
+  const cellWidth = imageRect.width / gridColumns;
+  const cellHeight = imageRect.height / gridRows;
+  const sourceCellWidth = image.naturalWidth / gridColumns;
+  const sourceCellHeight = image.naturalHeight / gridRows;
   const particleSize = clamp(Math.max(cellWidth, cellHeight) * 1.04, 1.8, 7.6);
   const nextParticles = [];
 
-  for (let y = 0; y < GRID_ROWS; y += 1) {
-    for (let x = 0; x < GRID_COLUMNS; x += 1) {
-      const index = y * GRID_COLUMNS + x;
+  for (let y = 0; y < gridRows; y += 1) {
+    for (let x = 0; x < gridColumns; x += 1) {
+      const index = y * gridColumns + x;
       const colorIndex = index * 4;
       const alpha = colors[colorIndex + 3] / 255;
       const red = colors[colorIndex];
@@ -397,6 +578,7 @@ function rebuildParticles(resetAnimation = true) {
   }
 
   particles = nextParticles;
+  activeParticles.clear();
 
   if (resetAnimation) {
     startAnimation("assemble", true);
@@ -407,7 +589,9 @@ function startAnimation(nextMode, firstRun = false) {
   mode = nextMode;
   progress = 0;
   animationStart = performance.now();
+  previousFrameTime = 0;
   interaction.intensity = 0;
+  activeParticles.clear();
 
   particles.forEach((particle) => {
     if (firstRun) {
@@ -418,13 +602,15 @@ function startAnimation(nextMode, firstRun = false) {
       particle.sourceY = particle.drawY ?? particle.y;
       particle.resetInteractiveOffset();
       particle.setScatterSource(false);
-      particle.delay = Math.random() * 360 + (particle.index % GRID_COLUMNS) * 1.5;
+      particle.delay = Math.random() * 360 + (particle.index % gridColumns) * 1.5;
       particle.duration = 1200 + Math.random() * 760;
     }
   });
 
   cancelAnimationFrame(animationFrame);
+  clearTimeout(animationTimer);
   animationFrame = 0;
+  animationTimer = 0;
   requestDraw();
 }
 
@@ -449,28 +635,43 @@ function disturbParticles(x, y, power = 1) {
 
   const radius = interaction.radius;
   const radiusSq = radius * radius;
-  const baseStrength = width < 640 ? 40 : 54;
+  const baseStrength = lowPowerMode ? 30 : width < 640 ? 40 : 54;
+  const cellWidth = imageRect.width / gridColumns;
+  const cellHeight = imageRect.height / gridRows;
+  const minGridX = clamp(Math.floor((x - radius - imageRect.x) / cellWidth), 0, gridColumns - 1);
+  const maxGridX = clamp(Math.ceil((x + radius - imageRect.x) / cellWidth), 0, gridColumns - 1);
+  const minGridY = clamp(Math.floor((y - radius - imageRect.y) / cellHeight), 0, gridRows - 1);
+  const maxGridY = clamp(Math.ceil((y + radius - imageRect.y) / cellHeight), 0, gridRows - 1);
 
-  for (const particle of particles) {
-    const particleX = particle.drawX ?? particle.x;
-    const particleY = particle.drawY ?? particle.y;
-    const dx = particleX - x;
-    const dy = particleY - y;
-    const distanceSq = dx * dx + dy * dy;
+  for (let gridY = minGridY; gridY <= maxGridY; gridY += 1) {
+    for (let gridX = minGridX; gridX <= maxGridX; gridX += 1) {
+      const particle = particles[gridY * gridColumns + gridX];
 
-    if (distanceSq >= radiusSq || distanceSq < 0.001) {
-      continue;
+      if (!particle) {
+        continue;
+      }
+
+      const particleX = particle.drawX ?? particle.x;
+      const particleY = particle.drawY ?? particle.y;
+      const dx = particleX - x;
+      const dy = particleY - y;
+      const distanceSq = dx * dx + dy * dy;
+
+      if (distanceSq >= radiusSq || distanceSq < 0.001) {
+        continue;
+      }
+
+      const distance = Math.sqrt(distanceSq);
+      const falloff = Math.pow(1 - distance / radius, 1.7);
+      const angle = Math.atan2(dy, dx) + (Math.random() - 0.5) * 0.34;
+      const force = (baseStrength + Math.random() * (lowPowerMode ? 22 : 38)) * falloff * power;
+
+      particle.velocityX += Math.cos(angle) * force;
+      particle.velocityY += Math.sin(angle) * force;
+      particle.offsetX += Math.cos(angle) * falloff * (lowPowerMode ? 6 : 8);
+      particle.offsetY += Math.sin(angle) * falloff * (lowPowerMode ? 6 : 8);
+      activeParticles.add(particle);
     }
-
-    const distance = Math.sqrt(distanceSq);
-    const falloff = Math.pow(1 - distance / radius, 1.7);
-    const angle = Math.atan2(dy, dx) + (Math.random() - 0.5) * 0.34;
-    const force = (baseStrength + Math.random() * 38) * falloff * power;
-
-    particle.velocityX += Math.cos(angle) * force;
-    particle.velocityY += Math.sin(angle) * force;
-    particle.offsetX += Math.cos(angle) * falloff * 8;
-    particle.offsetY += Math.sin(angle) * falloff * 8;
   }
 
   requestDraw();
@@ -495,21 +696,47 @@ function tick(now) {
   const elapsed = now - animationStart;
   let total = 0;
   let hasActiveDisplacement = false;
+  const shouldDrawAllParticles = mode !== "assemble" || progress < 0.999;
 
   ctx.clearRect(0, 0, width, height);
   drawBackgroundParticles(delta);
-  drawPhotoGuide();
+  if (!lowPowerMode) {
+    drawPhotoGuide();
+  }
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = "high";
 
-  for (const particle of particles) {
-    const particleState = particle.update(elapsed, mode);
-    total += particleState.raw;
-    hasActiveDisplacement = hasActiveDisplacement || particleState.displaced;
-    particle.draw(ctx);
+  if (mode === "assemble") {
+    if (shouldDrawAllParticles) {
+      if (lowPowerMode) {
+        drawStaticPhoto(smoothstep(0.38, 0.92, progress));
+      }
+    } else {
+      drawStaticPhoto(1);
+    }
   }
 
-  progress = clamp(total / particles.length, 0, 1);
+  if (shouldDrawAllParticles) {
+    for (const particle of particles) {
+      const particleState = particle.update(elapsed, mode);
+      total += particleState.raw;
+      hasActiveDisplacement = hasActiveDisplacement || particleState.displaced;
+      particle.draw(ctx);
+    }
+
+    progress = clamp(total / particles.length, 0, 1);
+  } else {
+    for (const particle of activeParticles) {
+      const particleState = particle.update(elapsed, mode);
+      hasActiveDisplacement = hasActiveDisplacement || particleState.displaced;
+      particle.draw(ctx);
+
+      if (!particleState.displaced) {
+        activeParticles.delete(particle);
+      }
+    }
+  }
+
   fadeInteraction();
   progressEl.style.transform = `scaleX(${progress})`;
   ctx.globalAlpha = 1;
@@ -520,7 +747,16 @@ function tick(now) {
 }
 
 function requestDraw() {
-  if (!animationFrame) {
+  if (animationFrame || animationTimer) {
+    return;
+  }
+
+  if (staticFrameInterval > 18) {
+    animationTimer = window.setTimeout(() => {
+      animationTimer = 0;
+      animationFrame = requestAnimationFrame(tick);
+    }, staticFrameInterval);
+  } else {
     animationFrame = requestAnimationFrame(tick);
   }
 }
@@ -598,6 +834,7 @@ async function loadImage() {
 
 async function init() {
   attachEvents();
+  daisySprites = createDaisySprites();
   resizeCanvas();
 
   try {
