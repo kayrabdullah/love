@@ -508,6 +508,45 @@ function drawStaticPhoto(alpha = 1) {
   ctx.restore();
 }
 
+function eraseStaticParticleHoles(particleList) {
+  if (!staticPhotoCanvas || !particleList.length) {
+    return;
+  }
+
+  ctx.save();
+  ctx.globalCompositeOperation = "destination-out";
+  ctx.fillStyle = "#000";
+
+  for (const particle of particleList) {
+    const displacement =
+      Math.hypot(particle.offsetX, particle.offsetY) +
+      Math.hypot(particle.velocityX, particle.velocityY) * 0.018;
+    const strength = smoothstep(2, lowPowerMode ? 18 : 26, displacement);
+
+    if (strength <= 0.01) {
+      continue;
+    }
+
+    const tileWidth = particle.tile?.width ?? particle.size;
+    const tileHeight = particle.tile?.height ?? particle.size;
+    const scale = lowPowerMode ? 2.1 : 1.55;
+    const holeWidth = Math.max(tileWidth * scale, particle.size * 1.8);
+    const holeHeight = Math.max(tileHeight * scale, particle.size * 1.8);
+
+    ctx.globalAlpha = 0.2 + strength * 0.8;
+    ctx.fillRect(
+      particle.targetX - holeWidth / 2,
+      particle.targetY - holeHeight / 2,
+      holeWidth,
+      holeHeight,
+    );
+  }
+
+  ctx.restore();
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = "source-over";
+}
+
 function resizeCanvas() {
   width = window.innerWidth;
   height = window.innerHeight;
@@ -726,14 +765,24 @@ function tick(now) {
 
     progress = clamp(total / particles.length, 0, 1);
   } else {
-    for (const particle of activeParticles) {
+    const activeSnapshot = Array.from(activeParticles);
+    const particlesToDraw = [];
+
+    for (const particle of activeSnapshot) {
       const particleState = particle.update(elapsed, mode);
       hasActiveDisplacement = hasActiveDisplacement || particleState.displaced;
-      particle.draw(ctx);
 
-      if (!particleState.displaced) {
+      if (particleState.displaced) {
+        particlesToDraw.push(particle);
+      } else {
         activeParticles.delete(particle);
       }
+    }
+
+    eraseStaticParticleHoles(particlesToDraw);
+
+    for (const particle of particlesToDraw) {
+      particle.draw(ctx);
     }
   }
 
