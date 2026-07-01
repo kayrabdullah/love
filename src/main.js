@@ -227,14 +227,14 @@ class Particle {
     this.y = lerp(startY, endY, eased) + Math.sin(this.drift) * shimmer;
 
     if (currentMode === "assemble") {
-      const spring = prefersReducedMotion ? 0.36 : 0.045;
-      const damping = prefersReducedMotion ? 0.52 : 0.78;
-      this.velocityX += -this.offsetX * spring;
-      this.velocityY += -this.offsetY * spring;
-      this.velocityX *= damping;
-      this.velocityY *= damping;
-      this.offsetX += this.velocityX;
-      this.offsetY += this.velocityY;
+      if (this.isDisplaced || Math.abs(this.offsetX) > 0.02 || Math.abs(this.offsetY) > 0.02) {
+        const returnEase = prefersReducedMotion ? 0.58 : lowPowerMode ? 0.22 : 0.18;
+        const velocityDecay = prefersReducedMotion ? 0.18 : 0.32;
+        this.offsetX = (this.offsetX + this.velocityX) * (1 - returnEase);
+        this.offsetY = (this.offsetY + this.velocityY) * (1 - returnEase);
+        this.velocityX *= velocityDecay;
+        this.velocityY *= velocityDecay;
+      }
     } else {
       this.offsetX *= 0.68;
       this.offsetY *= 0.68;
